@@ -253,6 +253,9 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         """
         return self._compute_model_inputs(x)
 
+    def _get_feature_transformer_fit_context(self, x: pd.DataFrame, y: Optional[pd.DataFrame]) -> Any:
+        return TrainingContext(x, y)
+
     def _compute_model_inputs(self, x: pd.DataFrame, y: pd.DataFrame = None, fit=False) -> pd.DataFrame:
         """
         :param x: the input data frame
@@ -265,7 +268,11 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
             x = self._rawInputTransformerChain.fit_apply(x)
             if self._featureGenerator is not None:
                 x = self._featureGenerator.fit_generate(x, y, self)
-            x = self._featureTransformerChain.fit_apply(x)
+            ctx = self._get_feature_transformer_fit_context(x, y)
+            if ctx is None:
+                x = self._featureTransformerChain.fit_apply(x)
+            else:
+                x = self._featureTransformerChain.fit_apply_with_context(x, ctx)
         else:
             x = self._rawInputTransformerChain.apply(x)
             if self._featureGenerator is not None:
@@ -327,10 +334,14 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         # no need for fitGenerate if chain is empty
         if self._featureGenerator is not None:
             if len(self._featureTransformerChain) == 0:
-                self._featureGenerator.fit(x, y)
+                self._featureGenerator.fit(x, y, self)
             else:
                 x = self._featureGenerator.fit_generate(x, y, self)
-        self._featureTransformerChain.fit(x)
+        feature_transformer_ctx = self._get_feature_transformer_fit_context(x, y)
+        if feature_transformer_ctx is None:
+            self._featureTransformerChain.fit(x)
+        else:
+            self._featureTransformerChain.fit_with_context(x, feature_transformer_ctx)
 
     def fit_input_output_data(self, io_data: InputOutputData, fit_preprocessors=True, fit_model=True):
         """
@@ -534,7 +545,7 @@ class VectorRegressionModel(VectorModel, ABC):
         **How not to use**: Output transformers are not meant to transform the predictions into something with a
         different semantic meaning (e.g. normalized into non-normalized or something like that) - you should consider
         using a targetTransformer for this purpose. Instead, they give the possibility to improve predictions through
-        post processing, when this is desired.
+        post-processing, when this is desired (e.g. calibration of predictions).
 
         :param output_transformers: DataFrameTransformers for the transformation of outputs
             (after the model has been applied)

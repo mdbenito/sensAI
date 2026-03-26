@@ -72,9 +72,11 @@ class TestDFTNormalisation:
             super().__init__(rules, require_all_handled=False)
             self.fitValues = fit_values
             self.fitContexts = []
+            self.fitArgumentColumnOrders = []
 
         def _fit_values_for_rule(self, *, rule: DFTNormalisation.Rule, matching_columns, applicable_df: pd.DataFrame, ctx=None) -> np.ndarray:
             self.fitContexts.append(ctx)
+            self.fitArgumentColumnOrders.append((list(matching_columns), list(applicable_df.columns)))
             return self.fitValues
 
     def test_multiColumnSingleRuleIndependent(self):
@@ -126,6 +128,16 @@ class TestDFTNormalisation:
         assert np.allclose(df2["foo"].values, df["foo"].values / 12.0)
         assert np.allclose(df2["bar"].values, df["bar"].values / 12.0)
         assert np.allclose(df2["baz"].values, df["baz"].values)
+
+    def test_contextAwareFitValuesReceiveMatchingColumnsInApplicableDataFrameOrder(self):
+        df = pd.DataFrame({"foo": [1.0, 2.0, 3.0], "bar": [2.0, 4.0, 6.0]})
+        dft = self.ContextAwareDFTNormalisation(
+            [DFTNormalisation.Rule(r"foo|bar", transformer=sklearn.preprocessing.MaxAbsScaler(), independent_columns=True)],
+            fit_values=np.array([[1.0, 2.0], [3.0, 4.0]]))
+
+        dft.fit_with_context(df, object())
+
+        assert dft.fitArgumentColumnOrders == [(["foo", "bar"], ["foo", "bar"])]
 
     def test_manualScalerCompatibility(self):
         df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})

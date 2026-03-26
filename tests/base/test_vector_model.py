@@ -5,10 +5,11 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn.preprocessing
 
 from sensai import InputOutputData
 from sensai.data_transformation import DFTDRowFilterOnIndex, \
-    InvertibleDataFrameTransformer, DFTDropNA
+    InvertibleDataFrameTransformer, DFTDropNA, DataFrameTransformer, DFTNormalisation
 from sensai.featuregen import FeatureGeneratorTakeColumns, FeatureGenerator
 from sensai.vector_model import RuleBasedVectorRegressionModel, VectorRegressionModel, VectorClassificationModel
 
@@ -34,6 +35,28 @@ class FittableDFT(InvertibleDataFrameTransformer):
         return df
 
 
+class RecordingDFT(DataFrameTransformer):
+    def __init__(self):
+        super().__init__()
+        self.fitCalls = 0
+
+    def _fit(self, df: pd.DataFrame):
+        self.fitCalls += 1
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+
+class ContextAwareDFTNormalisation(DFTNormalisation):
+    def __init__(self):
+        super().__init__([DFTNormalisation.Rule(r"foo", transformer=sklearn.preprocessing.MaxAbsScaler())])
+        self.fitContexts = []
+
+    def _fit_values_for_rule(self, *, rule: DFTNormalisation.Rule, matching_columns, applicable_df: pd.DataFrame, ctx=None) -> np.ndarray:
+        self.fitContexts.append(ctx)
+        return ctx.fit_values
+
+
 class SampleRuleBasedVectorModel(RuleBasedVectorRegressionModel):
     def __init__(self):
         super(SampleRuleBasedVectorModel, self).__init__(predicted_variable_names=["prediction"])
@@ -55,6 +78,33 @@ class SampleVectorModel(VectorRegressionModel):
 
     def _fit(self, x: pd.DataFrame, y: Optional[pd.DataFrame]):
         pass
+
+
+class FitRecordingSampleVectorModel(SampleVectorModel):
+    def __init__(self):
+        super().__init__()
+        self.fitInputs = None
+
+    def _fit(self, x: pd.DataFrame, y: Optional[pd.DataFrame]):
+        self.fitInputs = x.copy()
+
+
+class ContextAwareSampleVectorModel(SampleVectorModel):
+    def __init__(self, fit_values: np.ndarray):
+        super().__init__()
+        self.fit_values = fit_values
+
+    def _get_feature_transformer_fit_context(self, x: pd.DataFrame, y: Optional[pd.DataFrame]):
+        return self
+
+
+class ContextAwareRuleBasedVectorModel(SampleRuleBasedVectorModel):
+    def __init__(self, fit_values: np.ndarray):
+        super().__init__()
+        self.fit_values = fit_values
+
+    def _get_feature_transformer_fit_context(self, x: pd.DataFrame, y: Optional[pd.DataFrame]):
+        return self
 
 
 @pytest.fixture()
@@ -176,3 +226,68 @@ def test_InputRowsRemovedByTransformer(irisClassificationTestCase):
 
     model = MyModel().with_raw_input_transformers(DFTDropNA())
     model.fit(iodata.inputs, iodata.outputs)
+
+
+def test_featureTransformersReceiveFitContextDuringModelFit():
+    x = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+    y = pd.DataFrame({"prediction": [0.0, 0.0, 0.0]})
+    fit_values = np.array([[0.0], [10.0]])
+    ordinary_dft = RecordingDFT()
+    context_aware_dft = ContextAwareDFTNormalisation()
+    model = ContextAwareSampleVectorModel(fit_values).with_feature_transformers(ordinary_dft, context_aware_dft)
+
+    model.fit(x, y)
+
+    transformed_x = model.compute_model_inputs(x)
+    assert ordinary_dft.fitCalls == 1
+    assert context_aware_dft.fitContexts == [model]
+    assert np.allclose(transformed_x["foo"].values, x["foo"].values / 10.0)
+
+
+def test_featureTransformersReceiveFitContextDuringRuleBasedPreprocessorFit():
+    x = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+    y = pd.DataFrame({"prediction": [0.0, 0.0, 0.0]})
+    fit_values = np.array([[0.0], [8.0]])
+    ordinary_dft = RecordingDFT()
+    context_aware_dft = ContextAwareDFTNormalisation()
+    model = ContextAwareRuleBasedVectorModel(fit_values).with_feature_transformers(ordinary_dft, context_aware_dft)
+
+    model.fit(x, y)
+
+    transformed_x = model.get_feature_transformer_chain().apply(x)
+    assert ordinary_dft.fitCalls == 1
+    assert context_aware_dft.fitContexts == [model]
+    assert np.allclose(transformed_x["foo"].values, x["foo"].values / 8.0)
+
+
+def test_lastFeatureTransformerIsNotAppliedTwiceDuringModelFit():
+    x = pd.DataFrame({"foo": [1.0, 2.0, 4.0]})
+    y = pd.DataFrame({"prediction": [0.0, 0.0, 0.0]})
+    model = FitRecordingSampleVectorModel().with_feature_transformers(
+        DFTNormalisation(
+            [DFTNormalisation.Rule(r"foo", transformer=sklearn.preprocessing.MaxAbsScaler())],
+            inplace=True
+        )
+    )
+
+    model.fit(x.copy(), y)
+
+    transformed_x = model.compute_model_inputs(x.copy())
+    assert np.allclose(transformed_x["foo"].values, np.array([0.25, 0.5, 1.0]))
+    assert np.allclose(model.fitInputs["foo"].values, transformed_x["foo"].values)
+
+
+def test_nestedFeatureTransformerChainsReceiveFitContext():
+    x = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+    y = pd.DataFrame({"prediction": [0.0, 0.0, 0.0]})
+    fit_values = np.array([[0.0], [8.0]])
+    ordinary_dft = RecordingDFT()
+    context_aware_dft = ContextAwareDFTNormalisation()
+    model = ContextAwareSampleVectorModel(fit_values).with_feature_transformers(ordinary_dft.chain(context_aware_dft))
+
+    model.fit(x, y)
+
+    transformed_x = model.compute_model_inputs(x.copy())
+    assert ordinary_dft.fitCalls == 1
+    assert context_aware_dft.fitContexts == [model]
+    assert np.allclose(transformed_x["foo"].values, x["foo"].values / 8.0)

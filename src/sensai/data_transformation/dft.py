@@ -226,14 +226,23 @@ class DataFrameTransformerChain(DataFrameTransformer):
             self._isFitted = True
             return
 
-        def fit_one(_transformer: DataFrameTransformer, _df: pd.DataFrame) -> pd.DataFrame:
-            if isinstance(_transformer, DFTContextAwareMixin):
+        def supports_context(_transformer: DataFrameTransformer) -> bool:
+            return isinstance(_transformer, (DFTContextAwareMixin, DataFrameTransformerChain))
+
+        def fit_apply_one(_transformer: DataFrameTransformer, _df: pd.DataFrame) -> pd.DataFrame:
+            if supports_context(_transformer):
                 return _transformer.fit_apply_with_context(_df, ctx)
             else:
                 return _transformer.fit_apply(_df)
 
+        def fit_one(_transformer: DataFrameTransformer, _df: pd.DataFrame):
+            if supports_context(_transformer):
+                _transformer.fit_with_context(_df, ctx)
+            else:
+                _transformer.fit(_df)
+
         for transformer in self.dataFrameTransformers[:-1]:
-            df = fit_one(transformer, df)
+            df = fit_apply_one(transformer, df)
         fit_one(self.dataFrameTransformers[-1], df)
         self._isFitted = True
 
