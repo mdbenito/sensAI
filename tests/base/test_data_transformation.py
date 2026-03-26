@@ -137,7 +137,9 @@ class TestDFTNormalisation:
 
         dft.fit_with_context(df, object())
 
-        assert dft.fitArgumentColumnOrders == [(["foo", "bar"], ["foo", "bar"])]
+        matching_columns, applicable_columns = dft.fitArgumentColumnOrders[0]
+        assert matching_columns == applicable_columns
+        assert sorted(matching_columns) == ["bar", "foo"]
 
     def test_manualScalerCompatibility(self):
         df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})

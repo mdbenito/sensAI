@@ -793,7 +793,7 @@ class DFTNormalisation(DFTContextAwareMixin, DataFrameTransformer):
         # Note that transformers follow sklearn interfaces, thus just passing an array
         # to them will learn a per-column-transformation. This will be the case for independent_columns=True.
         for rule in self._userRules:
-            matching_columns = rule.matching_columns(df.columns)
+            matching_columns = sorted(rule.matching_columns(df.columns))
             for c in matching_columns:
                 if c in matched_rules_by_column:
                     raise Exception(f"More than one rule applies to column '{c}': {matched_rules_by_column[c]}, {rule}")
@@ -815,9 +815,8 @@ class DFTNormalisation(DFTContextAwareMixin, DataFrameTransformer):
                             rule.transformer = self._defaultTransformerFactory()
                     if rule.fit:
                         # fit transformer
-                        applicable_df = df[sorted(matching_columns)]
-                        values = self._fit_values_for_rule(rule=rule, matching_columns=matching_columns, applicable_df=applicable_df,
-                                                           ctx=ctx)
+                        applicable_df = df[matching_columns]
+                        values = self._fit_values_for_rule(rule=rule, matching_columns=matching_columns, applicable_df=applicable_df, ctx=ctx)
                         rule.transformer.fit(values)
             else:
                 log.log(logging.DEBUG - 1, f"{rule} matched no columns")
