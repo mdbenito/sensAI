@@ -377,7 +377,7 @@ class MultiFeatureGenerator(FeatureGenerator):
 
     def _fit(self, x: pd.DataFrame, y: pd.DataFrame = None, ctx=None):
         for fg in self.featureGenerators:
-            fg.fit(x, y)
+            fg.fit(x, y, ctx=ctx)
 
     def is_fitted(self):
         return all([fg.is_fitted() for fg in self.featureGenerators])
