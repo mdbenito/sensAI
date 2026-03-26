@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .. import util, data_transformation
-from ..data_transformation import DFTNormalisation, DFTFromFeatureGenerator, DataFrameTransformer
+from ..data_transformation import DFTNormalisation, DFTFromFeatureGenerator, DataFrameTransformer, DFTContextAwareMixin
 from ..util import flatten_arguments
 from ..util.pandas import ColumnMatcher, ColumnMatcherCollection
 from ..util.string import or_regex_group, ToStringMixin, list_string
@@ -917,7 +917,10 @@ class FeatureGeneratorFromDFT(FeatureGenerator):
         self.dft = dft
 
     def _fit(self, x: pd.DataFrame, y: pd.DataFrame = None, ctx=None):
-        self.dft.fit(x)
+        if isinstance(self.dft, DFTContextAwareMixin):
+            self.dft.fit_with_context(x, ctx)
+        else:
+            self.dft.fit(x)
 
     def _generate(self, df: pd.DataFrame, ctx=None) -> pd.DataFrame:
         return self.dft.apply(df)

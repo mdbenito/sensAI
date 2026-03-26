@@ -6,6 +6,7 @@ import pytest
 import sklearn.preprocessing
 
 from sensai.data_transformation import DataFrameTransformer, RuleBasedDataFrameTransformer, DataFrameTransformerChain, DFTNormalisation
+from sensai.data_transformation.sklearn_transformer import ManualScaler
 from sensai.featuregen import FeatureGenerator
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,16 @@ class TestDFTTransformerBasics:
 
 
 class TestDFTNormalisation:
+    class ContextAwareDFTNormalisation(DFTNormalisation):
+        def __init__(self, rules, fit_values: np.ndarray):
+            super().__init__(rules, require_all_handled=False)
+            self.fitValues = fit_values
+            self.fitContexts = []
+
+        def _fit_values_for_rule(self, *, rule: DFTNormalisation.Rule, matching_columns, applicable_df: pd.DataFrame, ctx=None) -> np.ndarray:
+            self.fitContexts.append(ctx)
+            return self.fitValues
+
     def test_multiColumnSingleRuleIndependent(self):
         arr = np.array([1, 5, 10])
         df = pd.DataFrame({"foo": arr, "bar": arr*100})
@@ -100,3 +111,26 @@ class TestDFTNormalisation:
         dft = DFTNormalisation([DFTNormalisation.Rule(r"foo|bar", transformer=sklearn.preprocessing.MaxAbsScaler(), array_valued=True)])
         df2 = dft.fit_apply(df)
         assert np.all(df2.foo.iloc[0] == arr/100) and np.all(df2.foo.iloc[-1] == arr/10)
+
+    def test_contextAwareFitValues(self):
+        df = pd.DataFrame({"foo": [1.0, 2.0, 3.0], "bar": [2.0, 4.0, 6.0], "baz": [10.0, 20.0, 30.0]})
+        fit_values = np.array([[0.0], [12.0]])
+        dft = self.ContextAwareDFTNormalisation(
+            [DFTNormalisation.Rule(r"foo|bar", transformer=sklearn.preprocessing.MaxAbsScaler(), independent_columns=False)],
+            fit_values=fit_values)
+        ctx = object()
+
+        df2 = dft.fit_apply_with_context(df, ctx)
+
+        assert dft.fitContexts == [ctx]
+        assert np.allclose(df2["foo"].values, df["foo"].values / 12.0)
+        assert np.allclose(df2["bar"].values, df["bar"].values / 12.0)
+        assert np.allclose(df2["baz"].values, df["baz"].values)
+
+    def test_manualScalerCompatibility(self):
+        df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+        dft = DFTNormalisation([DFTNormalisation.Rule(r"foo", transformer=ManualScaler())])
+
+        df2 = dft.fit_apply(df)
+
+        assert np.allclose(df2["foo"].values, df["foo"].values)

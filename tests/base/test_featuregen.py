@@ -1,12 +1,13 @@
 import logging
 import random
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from sensai import InputOutputData
-from sensai.data_transformation import DFTNormalisation, DFTFillNA, DataFrameTransformer
+from sensai.data_transformation import DFTNormalisation, DFTFillNA, DataFrameTransformer, DFTContextAwareMixin
 from sensai.data_transformation.sklearn_transformer import SkLearnTransformerFactoryFactory
 from sensai.evaluation import VectorClassificationModelEvaluator, VectorClassificationModelEvaluatorParams
 from sensai.featuregen import FeatureGeneratorFlattenColumns, FeatureGeneratorTakeColumns, flattened_feature_generator, \
@@ -63,6 +64,33 @@ class TestDFT(DataFrameTransformer):
 
     def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
+
+
+class RecordingDFT(DataFrameTransformer):
+    def __init__(self):
+        super().__init__()
+        self.fitCalls = 0
+
+    def _fit(self, df: pd.DataFrame):
+        self.fitCalls += 1
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+
+class RecordingContextAwareDFT(DFTContextAwareMixin, RecordingDFT):
+    def __init__(self):
+        super().__init__()
+        self.fitContexts = []
+
+    def fit_with_context(self, df: pd.DataFrame, ctx: Any):
+        self.fitContexts.append(ctx)
+        self._fit(df)
+        self._isFitted = True
+
+    def fit_apply_with_context(self, df: pd.DataFrame, ctx: Any) -> pd.DataFrame:
+        self.fit_with_context(df, ctx)
+        return self.apply(df)
 
 
 class RuleBasedTestFgen(RuleBasedFeatureGenerator):
@@ -152,3 +180,25 @@ def test_FeatureGeneratorNAMarker(irisClassificationTestCase):
             assert accuracy > 0.85
         else:
             assert accuracy < 0.85
+
+
+def test_FeatureGeneratorFromDFTUsesContextAwareFitPath():
+    df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+    ctx = object()
+    dft = RecordingContextAwareDFT()
+    fgen = dft.to_feature_generator()
+
+    fgen.fit(df, ctx=ctx)
+
+    assert dft.fitCalls == 1
+    assert dft.fitContexts == [ctx]
+
+
+def test_FeatureGeneratorFromDFTUsesOrdinaryFitPath():
+    df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+    dft = RecordingDFT()
+    fgen = dft.to_feature_generator()
+
+    fgen.fit(df, ctx=object())
+
+    assert dft.fitCalls == 1

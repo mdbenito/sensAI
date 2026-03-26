@@ -2,11 +2,12 @@ import copy
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import List, Sequence, Union, Dict, Callable, Any, Optional, Set
+from typing import List, Sequence, Union, Dict, Callable, Any, Optional, Set, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import sklearn
+from numpy.typing import NDArray
 from sklearn.preprocessing import OneHotEncoder
 
 from .sklearn_transformer import SkLearnTransformerProtocol
@@ -14,8 +15,6 @@ from ..util import flatten_arguments, count_not_none
 from ..util.pandas import DataFrameColumnChangeTracker
 from ..util.pickle import setstate
 from ..util.string import or_regex_group, ToStringMixin
-
-from typing import TYPE_CHECKING
 
 from ..util.version import Version
 
@@ -117,6 +116,16 @@ class DataFrameTransformer(ABC, ToStringMixin):
         return self._columnChangeTracker
 
 
+class DFTContextAwareMixin(ABC):
+    @abstractmethod
+    def fit_with_context(self, df: pd.DataFrame, ctx: Any):
+        ...
+
+    def fit_apply_with_context(self, df: pd.DataFrame, ctx: Any) -> pd.DataFrame:
+        self.fit_with_context(df, ctx)
+        return self.apply(df)
+
+
 class DFTFromFeatureGenerator(DataFrameTransformer):
     """
     Transforms a feature generator into a data frame transformer, which either returns the features data frame
@@ -211,6 +220,26 @@ class DataFrameTransformerChain(DataFrameTransformer):
         for transformer in self.dataFrameTransformers[:-1]:
             df = transformer.fit_apply(df)
         self.dataFrameTransformers[-1].fit(df)
+
+    def fit_with_context(self, df: pd.DataFrame, ctx: Any):
+        if len(self.dataFrameTransformers) == 0:
+            self._isFitted = True
+            return
+
+        def fit_one(_transformer: DataFrameTransformer, _df: pd.DataFrame) -> pd.DataFrame:
+            if isinstance(_transformer, DFTContextAwareMixin):
+                return _transformer.fit_apply_with_context(_df, ctx)
+            else:
+                return _transformer.fit_apply(_df)
+
+        for transformer in self.dataFrameTransformers[:-1]:
+            df = fit_one(transformer, df)
+        fit_one(self.dataFrameTransformers[-1], df)
+        self._isFitted = True
+
+    def fit_apply_with_context(self, df: pd.DataFrame, ctx: Any) -> pd.DataFrame:
+        self.fit_with_context(df, ctx)
+        return self.apply(df)
 
     def is_fitted(self):
         return all([dft.is_fitted() for dft in self.dataFrameTransformers])
@@ -518,7 +547,7 @@ class DFTDRowFilterOnIndex(RuleBasedDataFrameTransformer):
         return df
 
 
-class DFTNormalisation(DataFrameTransformer):
+class DFTNormalisation(DFTContextAwareMixin, DataFrameTransformer):
     """
     Applies normalisation/scaling to a data frame by applying a set of transformation rules, where each
     rule defines a set of columns to which it applies (learning a single transformer based on the values
@@ -737,6 +766,17 @@ class DFTNormalisation(DataFrameTransformer):
         return d
 
     def _fit(self, df: pd.DataFrame):
+        self._fit_with_context(df, ctx=None)
+
+    def fit_with_context(self, df: pd.DataFrame, ctx: Any):
+        self._fit_with_context(df, ctx=ctx)
+        self._isFitted = True
+
+    def fit_apply_with_context(self, df: pd.DataFrame, ctx: Any) -> pd.DataFrame:
+        self.fit_with_context(df, ctx)
+        return self.apply(df)
+
+    def _fit_with_context(self, df: pd.DataFrame, ctx: Any):
         matched_rules_by_column = {}
         self._rules = []
         # For rules matching multiple columns, if independent_columns is False, the columns
@@ -767,17 +807,8 @@ class DFTNormalisation(DataFrameTransformer):
                     if rule.fit:
                         # fit transformer
                         applicable_df = df[sorted(matching_columns)]
-                        if rule.arrayValued:
-                            if len(matching_columns) > 1:
-                                raise Exception(f"Array-valued case is only supported for a single column, "
-                                                f"matched {matching_columns} for {rule}")
-                            values = np.concatenate(applicable_df.values.flatten())
-                            values = values.reshape((len(values), 1))
-                        elif rule.independentColumns:
-                            values = applicable_df.values
-                        else:
-                            values = applicable_df.values.flatten()
-                            values = values.reshape((len(values), 1))
+                        values = self._fit_values_for_rule(rule=rule, matching_columns=matching_columns, applicable_df=applicable_df,
+                                                           ctx=ctx)
                         rule.transformer.fit(values)
             else:
                 log.log(logging.DEBUG - 1, f"{rule} matched no columns")
@@ -789,6 +820,33 @@ class DFTNormalisation(DataFrameTransformer):
                                  f"(got None)")
             specialised_rule.set_regex(or_regex_group(matching_columns))
             self._rules.append(specialised_rule)
+
+    def _fit_values_for_rule(self, *, rule: "DFTNormalisation.Rule", matching_columns: Sequence[str], applicable_df: pd.DataFrame,
+            ctx: Any = None) -> NDArray:
+        """ Returns the values to be used for fitting the rule's transformer, based on the rule and the applicable columns in the given
+        data frame.
+
+        Override in subclasses to customize behaviour based on the context.
+
+        :param rule: the rule for which values are to be obtained for fitting the transformer
+        :param matching_columns: the columns matched by the rule
+        :param applicable_df: the data frame containing the columns to be used for fitting the transformer
+        :param ctx: the context in which the normalisation is performed, which may be used for obtaining additional information for
+            fitting the transformer, e.g. from the feature generators that generated the columns
+
+        """
+        if rule.arrayValued:
+            if len(matching_columns) > 1:
+                raise Exception(f"Array-valued case is only supported for a single column, "
+                                f"matched {matching_columns} for {rule}")
+            values = np.concatenate(applicable_df.values.flatten())
+            values = values.reshape((len(values), 1))
+        elif rule.independentColumns:
+            values = applicable_df.values
+        else:
+            values = applicable_df.values.flatten()
+            values = values.reshape((len(values), 1))
+        return values
 
     def _check_unhandled_columns(self, df, matched_rules_by_column):
         if self.requireAllHandled:
