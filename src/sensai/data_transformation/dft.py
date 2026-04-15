@@ -196,7 +196,7 @@ class InverseDataFrameTransformer(RuleBasedDataFrameTransformer):
         return self.invertibleDFT.apply_inverse(df)
 
 
-class DataFrameTransformerChain(DataFrameTransformer):
+class DataFrameTransformerChain(DFTContextAwareMixin, DataFrameTransformer):
     """
     Supports the application of a chain of data frame transformers.
     During fit and apply each transformer in the chain receives the transformed output of its predecessor.

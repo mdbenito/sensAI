@@ -194,6 +194,20 @@ def test_FeatureGeneratorFromDFTUsesContextAwareFitPath():
     assert dft.fitContexts == [ctx]
 
 
+def test_FeatureGeneratorFromDFTUsesContextAwareFitPathForTransformerChains():
+    df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+    ctx = object()
+    ordinary_dft = RecordingDFT()
+    context_aware_dft = RecordingContextAwareDFT()
+    fgen = ordinary_dft.chain(context_aware_dft).to_feature_generator()
+
+    fgen.fit(df, ctx=ctx)
+
+    assert ordinary_dft.fitCalls == 1
+    assert context_aware_dft.fitCalls == 1
+    assert context_aware_dft.fitContexts == [ctx]
+
+
 def test_FeatureGeneratorFromDFTUsesOrdinaryFitPath():
     df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
     dft = RecordingDFT()

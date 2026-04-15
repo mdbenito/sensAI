@@ -253,8 +253,14 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         """
         return self._compute_model_inputs(x)
 
-    def _get_feature_transformer_fit_context(self, x: pd.DataFrame, y: Optional[pd.DataFrame]) -> Any:
-        return TrainingContext(x, y)
+    def _get_feature_transformer_fit_context(self) -> Optional[TrainingContext]:
+        """Returns the training context to be passed to feature transformers supporting it.
+
+        Override to return `None` to disable context-aware fitting of feature transformers.
+
+        :return: An object holding the raw input **by reference**.
+        """
+        return self._trainingContext
 
     def _compute_model_inputs(self, x: pd.DataFrame, y: pd.DataFrame = None, fit=False) -> pd.DataFrame:
         """
@@ -265,10 +271,10 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         :return:
         """
         if fit:
+            ctx = self._get_feature_transformer_fit_context()
             x = self._rawInputTransformerChain.fit_apply(x)
             if self._featureGenerator is not None:
                 x = self._featureGenerator.fit_generate(x, y, self)
-            ctx = self._get_feature_transformer_fit_context(x, y)
             if ctx is None:
                 x = self._featureTransformerChain.fit_apply(x)
             else:
@@ -330,6 +336,7 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         return True
 
     def _fit_preprocessors(self, x: pd.DataFrame, y: pd.DataFrame = None):
+        ctx = self._get_feature_transformer_fit_context()
         self._rawInputTransformerChain.fit(x)
         # no need for fitGenerate if chain is empty
         if self._featureGenerator is not None:
@@ -337,11 +344,10 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
                 self._featureGenerator.fit(x, y, self)
             else:
                 x = self._featureGenerator.fit_generate(x, y, self)
-        feature_transformer_ctx = self._get_feature_transformer_fit_context(x, y)
-        if feature_transformer_ctx is None:
+        if ctx is None:
             self._featureTransformerChain.fit(x)
         else:
-            self._featureTransformerChain.fit_with_context(x, feature_transformer_ctx)
+            self._featureTransformerChain.fit_with_context(x, ctx)
 
     def fit_input_output_data(self, io_data: InputOutputData, fit_preprocessors=True, fit_model=True):
         """
