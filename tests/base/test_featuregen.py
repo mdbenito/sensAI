@@ -88,10 +88,6 @@ class RecordingContextAwareDFT(DFTContextAwareMixin, RecordingDFT):
         self._fit(df)
         self._isFitted = True
 
-    def fit_apply_with_context(self, df: pd.DataFrame, ctx: Any) -> pd.DataFrame:
-        self.fit_with_context(df, ctx)
-        return self.apply(df)
-
 
 class RuleBasedTestFgen(RuleBasedFeatureGenerator):
     def _generate(self, df: pd.DataFrame, ctx=None) -> pd.DataFrame:
