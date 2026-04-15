@@ -1,11 +1,18 @@
 import logging
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 import sklearn.preprocessing
 
-from sensai.data_transformation import DataFrameTransformer, RuleBasedDataFrameTransformer, DataFrameTransformerChain, DFTNormalisation
+from sensai.data_transformation import (
+    DataFrameTransformer,
+    RuleBasedDataFrameTransformer,
+    DataFrameTransformerChain,
+    DFTContextAwareMixin,
+    DFTNormalisation,
+)
 from sensai.data_transformation.sklearn_transformer import ManualScaler
 from sensai.featuregen import FeatureGenerator
 
@@ -23,6 +30,36 @@ class TestDFTTransformerBasics:
     class RuleBasedTestDFT(RuleBasedDataFrameTransformer):
         def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
             return df
+
+    class ContextAwareMultiplyDFT(DFTContextAwareMixin, DataFrameTransformer):
+        def __init__(self):
+            super().__init__()
+            self.fitContexts = []
+            self.factor = None
+
+        def _fit(self, df: pd.DataFrame):
+            raise AssertionError("Context-aware fit path was not used")
+
+        def fit_with_context(self, df: pd.DataFrame, ctx: Any):
+            self.fitContexts.append(ctx)
+            self.factor = ctx["factor"]
+            self._isFitted = True
+
+        def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+            df = df.copy()
+            df["foo"] = df["foo"] * self.factor
+            return df
+
+    class FitInputRecordingDFT(DataFrameTransformer):
+        def __init__(self):
+            super().__init__()
+            self.fitInputs = []
+
+        def _fit(self, df: pd.DataFrame):
+            self.fitInputs.append(df.copy())
+
+        def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+            return df.copy()
 
     class TestFgen(FeatureGenerator):
         def _fit(self, x: pd.DataFrame, y: pd.DataFrame = None, ctx=None):
@@ -64,6 +101,27 @@ class TestDFTTransformerBasics:
         # if all fgens are fitted, the combination is also fitted, even if fit was not called
         dftChain = DataFrameTransformerChain([self.RuleBasedTestDFT(), self.RuleBasedTestDFT()])
         assert dftChain.is_fitted()
+
+    def test_nestedContextAwareChainFitAppliesIntermediatesBeforeFittingFollowingTransformers(self):
+        df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
+        ctx = {"factor": 10}
+        context_aware_dft = self.ContextAwareMultiplyDFT()
+        inner_fit_recorder = self.FitInputRecordingDFT()
+        outer_fit_recorder = self.FitInputRecordingDFT()
+        chain = DataFrameTransformerChain(
+            DataFrameTransformerChain(
+                DataFrameTransformerChain(context_aware_dft, inner_fit_recorder)
+            ),
+            outer_fit_recorder,
+        )
+
+        df2 = chain.fit_apply_with_context(df, ctx)
+
+        assert context_aware_dft.fitContexts == [ctx]
+        expected_values = np.array([10.0, 20.0, 30.0])
+        assert np.allclose(inner_fit_recorder.fitInputs[0]["foo"].values, expected_values)
+        assert np.allclose(outer_fit_recorder.fitInputs[0]["foo"].values, expected_values)
+        assert np.allclose(df2["foo"].values, expected_values)
 
 
 class TestDFTNormalisation:
