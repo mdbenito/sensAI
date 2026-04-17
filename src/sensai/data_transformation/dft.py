@@ -569,7 +569,7 @@ class DFTNormalisation(DFTContextAwareMixin, DataFrameTransformer):
                 skip: bool = False,
                 unsupported: bool = False,
                 transformer: Optional[SkLearnTransformerProtocol] = None,
-                transformer_factory: Callable[[], SkLearnTransformerProtocol] = None,
+                transformer_factory: Optional[Callable[[], SkLearnTransformerProtocol]] = None,
                 independent_columns: Optional[bool] = None,
                 array_valued: bool = False,
                 fit: bool = True):
