@@ -375,7 +375,8 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         try:
             log.info(f"Fitting {self.__class__.__name__} instance")
             sw = StopWatch()
-            self._predictedVariableNames = list(y.columns)
+            if y is not None:
+                self._predictedVariableNames = list(y.columns)
             if not self._underlying_model_requires_fitting():
                 if fit_preprocessors:
                     self._fit_preprocessors(x, y=y)
