@@ -102,6 +102,16 @@ class TestDFTTransformerBasics:
         dftChain = DataFrameTransformerChain([self.RuleBasedTestDFT(), self.RuleBasedTestDFT()])
         assert dftChain.is_fitted()
 
+    def test_usesFitContext(self):
+        assert not DataFrameTransformerChain(self.TestDFT(), self.RuleBasedTestDFT()).uses_fit_context()
+        assert DataFrameTransformerChain(self.ContextAwareMultiplyDFT()).uses_fit_context()
+        assert DataFrameTransformerChain(
+            DataFrameTransformerChain(self.TestDFT(), self.ContextAwareMultiplyDFT())
+        ).uses_fit_context()
+        assert not DataFrameTransformerChain(
+            DataFrameTransformerChain(self.TestDFT(), self.RuleBasedTestDFT())
+        ).uses_fit_context()
+
     def test_nestedContextAwareChainFitAppliesIntermediatesBeforeFittingFollowingTransformers(self):
         df = pd.DataFrame({"foo": [1.0, 2.0, 3.0]})
         ctx = {"factor": 10}
