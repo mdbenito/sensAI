@@ -253,6 +253,15 @@ class DataFrameTransformerChain(DFTContextAwareMixin, DataFrameTransformer):
     def is_fitted(self):
         return all([dft.is_fitted() for dft in self.dataFrameTransformers])
 
+    def uses_fit_context(self) -> bool:
+        for transformer in self.dataFrameTransformers:
+            if isinstance(transformer, DataFrameTransformerChain):
+                if transformer.uses_fit_context():
+                    return True
+            elif isinstance(transformer, DFTContextAwareMixin):
+                return True
+        return False
+
     def get_names(self) -> List[str]:
         """
         :return: the list of names of all contained feature generators
