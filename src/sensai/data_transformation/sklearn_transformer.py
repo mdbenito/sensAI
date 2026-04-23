@@ -20,13 +20,13 @@ def to_2d_array(arr: TransformableArray) -> np.ndarray:
 
 
 class SkLearnTransformerProtocol(Protocol):
-    def inverse_transform(self, arr: TransformableArray) -> np.ndarray:
+    def inverse_transform(self, X: TransformableArray) -> np.ndarray:  # noqa: N803
         pass
 
-    def transform(self, arr: TransformableArray) -> np.ndarray:
+    def transform(self, X: TransformableArray) -> np.ndarray:  # noqa: N803
         pass
 
-    def fit(self, arr: TransformableArray):
+    def fit(self, X: TransformableArray):  # noqa: N803
         pass
 
 
@@ -42,16 +42,16 @@ class ManualScaler(SkLearnTransformerProtocol):
         self.centre = centre if centre is not None else 0.0
         self.scale = scale if scale is not None else 1.0
 
-    def fit(self, arr):
+    def fit(self, X):  # noqa: N803
         pass
 
-    def transform(self, arr: TransformableArray) -> np.ndarray:
-        arr = to_2d_array(arr)
-        return (arr - self.centre) * self.scale
+    def transform(self, X: TransformableArray) -> np.ndarray:  # noqa: N803
+        X = to_2d_array(X)
+        return (X - self.centre) * self.scale
 
-    def inverse_transform(self, arr: TransformableArray) -> np.ndarray:
-        arr = to_2d_array(arr)
-        return (arr / self.scale) + self.centre
+    def inverse_transform(self, X: TransformableArray) -> np.ndarray:  # noqa: N803
+        X = to_2d_array(X)
+        return (X / self.scale) + self.centre
 
 
 # noinspection PyPep8Naming
