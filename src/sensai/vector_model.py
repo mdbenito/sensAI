@@ -4,10 +4,11 @@ a single model input or output. Since every row contains a vector of data (one-d
 models. Hence the name of the module and of the central base class :class:`VectorModel`.
 """
 
+from dataclasses import dataclass
 import logging
 import typing
 from abc import ABC, abstractmethod
-from typing import List, Any, Optional, Union, Type, Dict
+from typing import List, Any, Optional, Union, Type, Dict, Callable
 
 import numpy as np
 import pandas as pd
@@ -74,9 +75,36 @@ class TrainingContext:
     """
     Contains context information for an ongoing training process
     """
-    def __init__(self, original_input: pd.DataFrame, original_output: pd.DataFrame):
+    def __init__(self, original_input: pd.DataFrame, original_output: Optional[pd.DataFrame]):
         self.original_input = original_input
         self.original_output = original_output
+
+
+@dataclass(frozen=True)
+class FeatureTransformerFitContextInput:
+    """
+    Fit-time context for feature transformers.
+
+    All data frames are exposed by reference and must be treated as read-only.
+
+    :ivar original_input: Original input data frame provided to :meth:`fit`.
+    :ivar original_output: Original output data frame provided to :meth:`fit`, if any.
+    :ivar model_output: Output data frame after model-output preprocessing, if any.
+    :ivar raw_transformed_input: Input data frame after the raw-input transformer chain
+        and before feature generation.
+    :ivar feature_transformer_input: Data frame on which the feature-transformer chain
+        is fitted, i.e. after feature generation and before feature transformation.
+
+    .. note::
+        If no feature generator is configured, ``feature_transformer_input`` and
+        ``raw_transformed_input`` represent the same stage and will typically be the
+        same data frame.
+    """
+    original_input: pd.DataFrame
+    original_output: Optional[pd.DataFrame]
+    model_output: Optional[pd.DataFrame]
+    raw_transformed_input: pd.DataFrame
+    feature_transformer_input: pd.DataFrame
 
 
 class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
@@ -108,6 +136,7 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         self._predictedVariableNames: Optional[list] = None
         self._modelInputVariableNames: Optional[list] = None
         self._checkInputColumns = check_input_columns
+        self._featureTransformerFitContextFactory: Optional[Callable[[FeatureTransformerFitContextInput], Any]] = None
 
         # transient members
         self._trainingContext: Optional[TrainingContext] = None
@@ -119,7 +148,10 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         for m in VectorModel._TRANSIENT_MEMBERS:
             state[m] = None
         setstate(VectorModel, self, state, renamed_properties=self._RENAMED_MEMBERS,
-            new_default_properties={"_rawInputTransformerChain": DataFrameTransformerChain()})
+            new_default_properties={
+                "_rawInputTransformerChain": DataFrameTransformerChain(),
+                "_featureTransformerFitContextFactory": None
+            })
 
     def _tostring_exclude_private(self) -> bool:
         return True
@@ -170,6 +202,21 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
                 self._featureTransformerChain.append(t)
         return self
 
+    def with_feature_transformer_fit_context_factory(self: TVectorModel,
+            factory: Optional[Callable[[FeatureTransformerFitContextInput], Any]]) -> TVectorModel:
+        """
+        Makes the model use the given factory to produce fit-time context for context-aware feature transformers.
+
+        The factory is called immediately before fitting the feature-transformer chain and only if that chain contains
+        at least one context-aware transformer.
+
+        :param factory: a callable which receives the feature-transformer fit-state and returns the context object to
+            pass to context-aware feature transformers; if None, the fit-state object itself is passed by default
+        :return: self
+        """
+        self._featureTransformerFitContextFactory = factory
+        return self
+
     @deprecated("Use with_feature_transformers instead; this method will be removed in a future sensAI release.")
     def with_input_transformers(self: TVectorModel,
             *input_transformers: Union[DataFrameTransformer, List[DataFrameTransformer]]) -> TVectorModel:
@@ -188,7 +235,7 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         If the model shall use more than one feature generator, pass a :class:`MultiFeatureGenerator` which combines them or
         use the perhaps more convenient :class:`FeatureCollector` in conjunction with :meth:`withFeatureCollector`.
 
-        Note: Feature computation takes place before input transformation.
+        Note: Feature generation takes place after raw input transformation and before feature transformation.
 
         :param feature_generator: the feature generator to use for input computation
         :return: self
@@ -253,36 +300,60 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         """
         return self._compute_model_inputs(x)
 
-    def _get_feature_transformer_fit_context(self) -> Optional[TrainingContext]:
-        """Returns the training context to be passed to feature transformers supporting it.
+    def _get_feature_transformer_fit_context(self, fit_context_input: FeatureTransformerFitContextInput) -> Optional[Any]:
+        """
+        Returns the context to be passed to feature transformers supporting it.
 
         Override to return `None` to disable context-aware fitting of feature transformers.
-
-        :return: An object holding the raw input **by reference**.
         """
-        return self._trainingContext
+        if self._featureTransformerFitContextFactory is not None:
+            return self._featureTransformerFitContextFactory(fit_context_input)
+        return fit_context_input
 
-    def _compute_model_inputs(self, x: pd.DataFrame, y: pd.DataFrame = None, fit=False) -> pd.DataFrame:
+    def _compute_feature_transformer_input(self, x: pd.DataFrame, y: Optional[pd.DataFrame] = None, fit=False) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if fit:
+            x = self._rawInputTransformerChain.fit_apply(x)
+            raw_transformed_input = x
+            if self._featureGenerator is not None:
+                x = self._featureGenerator.fit_generate(x, y, self)
+        else:
+            x = self._rawInputTransformerChain.apply(x)
+            raw_transformed_input = x
+            if self._featureGenerator is not None:
+                x = self._featureGenerator.generate(x, self)
+        return raw_transformed_input, x
+
+    def _compute_model_inputs(self, x: pd.DataFrame, y: Optional[pd.DataFrame] = None,
+            model_y: Optional[pd.DataFrame] = None, fit=False) -> pd.DataFrame:
         """
         :param x: the input data frame
         :param y: the output data frame (when training); only has to be provided if ``fit=True`` and preprocessors require outputs
             for fitting
+        :param model_y: the output data frame as seen by the underlying model, only has to be provided if ``fit=True`` and feature
+            transformer context requires outputs
         :param fit: if True, preprocessors will be fitted before being applied to ``X``
         :return:
         """
+        original_input = x
+        raw_transformed_input, x = self._compute_feature_transformer_input(x, y=y, fit=fit)
         if fit:
-            ctx = self._get_feature_transformer_fit_context()
-            x = self._rawInputTransformerChain.fit_apply(x)
-            if self._featureGenerator is not None:
-                x = self._featureGenerator.fit_generate(x, y, self)
-            if ctx is None:
-                x = self._featureTransformerChain.fit_apply(x)
+            if self._featureTransformerChain.uses_fit_context():
+                training_context = self._trainingContext
+                fit_context_input = FeatureTransformerFitContextInput(
+                    original_input=original_input if training_context is None else training_context.original_input,
+                    original_output=y if training_context is None else training_context.original_output,
+                    model_output=model_y,
+                    raw_transformed_input=raw_transformed_input,
+                    feature_transformer_input=x
+                )
+                ctx = self._get_feature_transformer_fit_context(fit_context_input)
+                if ctx is None:
+                    x = self._featureTransformerChain.fit_apply(x)
+                else:
+                    x = self._featureTransformerChain.fit_apply_with_context(x, ctx)
             else:
-                x = self._featureTransformerChain.fit_apply_with_context(x, ctx)
+                x = self._featureTransformerChain.fit_apply(x)
         else:
-            x = self._rawInputTransformerChain.apply(x)
-            if self._featureGenerator is not None:
-                x = self._featureGenerator.generate(x, self)
             x = self._featureTransformerChain.apply(x)
         return x
 
@@ -335,19 +406,9 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
         """
         return True
 
-    def _fit_preprocessors(self, x: pd.DataFrame, y: pd.DataFrame = None):
-        ctx = self._get_feature_transformer_fit_context()
-        self._rawInputTransformerChain.fit(x)
-        # no need for fitGenerate if chain is empty
-        if self._featureGenerator is not None:
-            if len(self._featureTransformerChain) == 0:
-                self._featureGenerator.fit(x, y, self)
-            else:
-                x = self._featureGenerator.fit_generate(x, y, self)
-        if ctx is None:
-            self._featureTransformerChain.fit(x)
-        else:
-            self._featureTransformerChain.fit_with_context(x, ctx)
+    def _fit_preprocessors(self, x: pd.DataFrame, y: Optional[pd.DataFrame] = None,
+            model_y: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        return self._compute_model_inputs(x, y=y, model_y=model_y, fit=True)
 
     def fit_input_output_data(self, io_data: InputOutputData, fit_preprocessors=True, fit_model=True):
         """
@@ -365,7 +426,7 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
 
         :param x: a data frame containing input data
         :param y: a data frame containing output data; may be None if the underlying model does not actually require
-            fitting, e.g. in the case of a rule-based models, but fitting is still necessary for preprocessors
+            fitting, e.g. in the case of rule-based models, but fitting is still necessary for preprocessors
         :param weights: an optional series (with the same index as `x` and `y`) containing data point weights.
             Added in v1.2.0.
         :param fit_preprocessors: whether the model's preprocessors (feature generators and data frame transformers) shall be fitted
@@ -379,15 +440,20 @@ class VectorModel(VectorModelBase, PickleLoadSaveMixin, ABC):
                 self._predictedVariableNames = list(y.columns)
             if not self._underlying_model_requires_fitting():
                 if fit_preprocessors:
-                    self._fit_preprocessors(x, y=y)
-                self._modelInputVariableNames = None  # not known for rule-based models because the fitting process is optimised
+                    model_y = None
+                    if y is not None and self._featureTransformerChain.uses_fit_context():
+                        model_y = self._compute_model_outputs(y)
+                    x = self._compute_model_inputs(x, y=y, model_y=model_y, fit=True)
+                    self._modelInputVariableNames = list(x.columns)
+                else:
+                    self._modelInputVariableNames = None
             else:
                 if y is None:
                     raise Exception(f"The underlying model requires a data frame for fitting but Y=None was passed")
                 if len(x) != len(y):
                     raise ValueError(f"Length of input ({len(x)}) does not match length of output ({len(y)})")
                 y = self._compute_model_outputs(y)
-                x = self._compute_model_inputs(x, y=y, fit=fit_preprocessors)
+                x = self._compute_model_inputs(x, y=self._trainingContext.original_output, model_y=y, fit=fit_preprocessors)
                 if len(x) != len(y):
                     log.debug(f"Input computation changed number of data points ({len(self._trainingContext.original_input)} -> {len(x)})")
                     y = y.loc[x.index]
@@ -755,6 +821,9 @@ class RuleBasedVectorRegressionModel(VectorRegressionModel, ABC):
     def __init__(self, predicted_variable_names: list):
         """
         :param predicted_variable_names: These are typically known at init time for rule-based models
+
+        Note: input-column checking remains disabled by default for rule-based models for backward compatibility.
+        Rule-based models can be schema-tolerant, even though input variable names may now be recorded during fit.
         """
         super().__init__(check_input_columns=False)
         self._predictedVariableNames = predicted_variable_names
@@ -773,6 +842,8 @@ class RuleBasedVectorClassificationModel(VectorClassificationModel, ABC):
         """
         :param labels:
         :param predicted_variable_name:
+
+        Note: input-column checking remains disabled by default for rule-based models for backward compatibility.
         """
         super().__init__(check_input_columns=False)
 
